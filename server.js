@@ -31,10 +31,11 @@ async function loadTasks() {
 }
 
 function saveTasks(tasks) {
-  writeQueue = writeQueue.then(() =>
+  const next = writeQueue.then(() =>
     fs.writeFile(TASKS_FILE, JSON.stringify(tasks, null, 2))
   );
-  return writeQueue;
+  writeQueue = next.catch(() => {}); // keep queue alive on disk errors
+  return next;
 }
 
 async function addTask(task) {
@@ -55,7 +56,10 @@ async function recoverStaleTasks() {
   const tasks = await loadTasks();
   const stale = tasks.filter(t => t.status === 'running');
   if (!stale.length) return;
-  stale.forEach(t => { t.status = 'failed'; t.output = '[server restarted]'; });
+  stale.forEach(t => {
+    t.status = 'failed';
+    t.output = (t.output ? t.output + '\n' : '') + '[server restarted]';
+  });
   return saveTasks(tasks);
 }
 
@@ -70,7 +74,10 @@ const AUTH_USER = process.env.COWORK_USER;
 const AUTH_PASS = process.env.COWORK_PASS;
 
 function basicAuth(req, res, next) {
-  if (!AUTH_USER || !AUTH_PASS) return next();
+  if (!AUTH_USER || !AUTH_PASS) {
+    // Auth disabled — COWORK_USER/COWORK_PASS not set in env
+    return next();
+  }
   const auth = req.headers.authorization || '';
   const [type, encoded = ''] = auth.split(' ');
   if (type !== 'Basic') {
@@ -104,6 +111,9 @@ app.get('/tasks', async (req, res) => {
 
 // --- START ---
 recoverStaleTasks().then(() => {
+  if (!AUTH_USER || !AUTH_PASS) {
+    console.warn('WARNING: auth disabled — set COWORK_USER and COWORK_PASS in .env');
+  }
   app.listen(PORT, () => {
     console.log(`cowork-remote listening on http://localhost:${PORT}`);
   });
