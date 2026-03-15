@@ -160,7 +160,51 @@ app.post('/run', async (req, res) => {
   res.json({ id });
 });
 
-// GET /stream/:id added in Task 5
+// Stream task output via Server-Sent Events
+app.get('/stream/:id', async (req, res) => {
+  const { id } = req.params;
+
+  const entry = registry.get(id);
+
+  if (!entry) {
+    // Not running — look up in tasks.json before flushing SSE headers
+    const tasks = await loadTasks();
+    const task = tasks.find(t => t.id === id);
+    if (!task) {
+      return res.status(404).json({ error: 'not found' });
+    }
+    // Replay saved output as SSE
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+    res.flushHeaders();
+    res.write(`data: ${JSON.stringify(task.output)}\n\n`);
+    res.write(`event: done\ndata: ${JSON.stringify({ status: task.status })}\n\n`);
+    return res.end();
+  }
+
+  // Task is still running — open SSE stream
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+  res.flushHeaders();
+
+  // Send buffered output so far
+  if (entry.outputBuffer) {
+    res.write(`data: ${JSON.stringify(entry.outputBuffer)}\n\n`);
+  }
+
+  const onData = (str) => res.write(`data: ${JSON.stringify(str)}\n\n`);
+  const onDone = (status) => {
+    res.write(`event: done\ndata: ${JSON.stringify({ status })}\n\n`);
+    cleanup();
+    res.end();
+  };
+  const cleanup = () => {
+    entry.emitter.off('data', onData);
+    entry.emitter.off('done', onDone);
+  };
+
+  entry.emitter.on('data', onData);
+  entry.emitter.once('done', onDone);
+  req.on('close', cleanup);
+});
 
 // --- START ---
 recoverStaleTasks().then(() => {
