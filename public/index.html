@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cowork-remote</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f0f0f;
+      color: #e0e0e0;
+      font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+      font-size: 14px;
+      padding: 1rem;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      color: #fff;
+      font-size: 1.2rem;
+      margin-bottom: 1rem;
+      letter-spacing: 0.05em;
+    }
+
+    textarea {
+      width: 100%;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-family: inherit;
+      font-size: 14px;
+      padding: 0.75rem;
+      resize: vertical;
+      outline: none;
+    }
+    textarea:focus { border-color: #555; }
+
+    #run-btn {
+      margin-top: 0.5rem;
+      width: 100%;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.75rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #run-btn:disabled { background: #1e3a6e; cursor: not-allowed; }
+    #run-btn:hover:not(:disabled) { background: #1d4ed8; }
+
+    #output-panel {
+      margin-top: 1rem;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 6px;
+      padding: 0.75rem;
+      min-height: 120px;
+      max-height: 50vh;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      color: #a8e6cf;
+      display: none;
+    }
+
+    h2 {
+      color: #888;
+      font-size: 0.8rem;
+      margin: 1.5rem 0 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    #history-list { list-style: none; }
+
+    .task-item {
+      border: 1px solid #222;
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+    }
+
+    .task-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 0.75rem;
+      cursor: pointer;
+      user-select: none;
+    }
+    .task-header:hover { background: #1a1a1a; border-radius: 6px; }
+
+    .badge {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 700;
+      flex-shrink: 0;
+      text-transform: uppercase;
+    }
+    .badge-running { background: #7c3aed; color: #fff; }
+    .badge-done    { background: #065f46; color: #6ee7b7; }
+    .badge-failed  { background: #7f1d1d; color: #fca5a5; }
+
+    .task-prompt {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #ccc;
+      font-size: 13px;
+    }
+
+    .task-time { font-size: 11px; color: #555; flex-shrink: 0; }
+
+    .task-output {
+      display: none;
+      padding: 0.5rem 0.75rem 0.75rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      color: #a8e6cf;
+      border-top: 1px solid #222;
+      max-height: 40vh;
+      overflow-y: auto;
+    }
+    .task-output.open { display: block; }
+  </style>
+</head>
+<body>
+  <h1>cowork-remote</h1>
+
+  <textarea id="prompt" rows="6" placeholder="Describe the task for Claude..."></textarea>
+  <button id="run-btn">Run</button>
+  <pre id="output-panel"></pre>
+
+  <h2>Recent Tasks</h2>
+  <ul id="history-list"></ul>
+
+  <script>
+    const promptEl   = document.getElementById('prompt');
+    const runBtn     = document.getElementById('run-btn');
+    const outputPanel = document.getElementById('output-panel');
+    const historyList = document.getElementById('history-list');
+
+    function timeSince(iso) {
+      const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+      if (s < 60)   return s + 's ago';
+      if (s < 3600) return Math.floor(s / 60) + 'm ago';
+      return Math.floor(s / 3600) + 'h ago';
+    }
+
+    function renderTask(task) {
+      const li = document.createElement('li');
+      li.className = 'task-item';
+      li.dataset.id = task.id;
+
+      const header = document.createElement('div');
+      header.className = 'task-header';
+
+      // Use textContent for user-supplied fields to prevent XSS
+      const badge = document.createElement('span');
+      badge.className = 'badge badge-' + task.status;
+      badge.textContent = task.status;
+
+      const prompt = document.createElement('span');
+      prompt.className = 'task-prompt';
+      prompt.textContent = task.prompt.slice(0, 80);
+
+      const time = document.createElement('span');
+      time.className = 'task-time';
+      time.textContent = timeSince(task.timestamp);
+
+      header.appendChild(badge);
+      header.appendChild(prompt);
+      header.appendChild(time);
+
+      const output = document.createElement('pre');
+      output.className = 'task-output';
+      output.textContent = task.output || '';
+
+      header.addEventListener('click', () => output.classList.toggle('open'));
+
+      li.appendChild(header);
+      li.appendChild(output);
+      return li;
+    }
+
+    async function loadHistory() {
+      try {
+        const res = await fetch('/tasks');
+        const tasks = await res.json();
+        historyList.innerHTML = '';
+        tasks.forEach(t => historyList.appendChild(renderTask(t)));
+      } catch (e) {
+        console.error('Failed to load history:', e);
+      }
+    }
+
+    runBtn.addEventListener('click', async () => {
+      const prompt = promptEl.value.trim();
+      if (!prompt) return;
+
+      runBtn.disabled = true;
+      outputPanel.textContent = '';
+      outputPanel.style.display = 'block';
+      outputPanel.scrollTop = 0;
+
+      let runRes;
+      try {
+        runRes = await fetch('/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt }),
+        });
+      } catch (e) {
+        outputPanel.textContent = '[network error: ' + e.message + ']';
+        runBtn.disabled = false;
+        return;
+      }
+
+      const { id, error } = await runRes.json();
+      if (error) {
+        outputPanel.textContent = '[error: ' + error + ']';
+        runBtn.disabled = false;
+        return;
+      }
+
+      const es = new EventSource('/stream/' + id);
+
+      es.onmessage = (e) => {
+        outputPanel.textContent += JSON.parse(e.data);
+        outputPanel.scrollTop = outputPanel.scrollHeight;
+      };
+
+      es.addEventListener('done', () => {
+        es.close();
+        runBtn.disabled = false;
+        loadHistory();
+      });
+
+      es.addEventListener('error', () => {
+        es.close();
+        runBtn.disabled = false;
+        loadHistory();
+      });
+    });
+
+    loadHistory();
+  </script>
+</body>
+</html>
