@@ -107,7 +107,60 @@ app.get('/tasks', async (req, res) => {
   res.json(await loadTasks());
 });
 
-// POST /run and GET /stream/:id added in Chunk 3
+// Submit a new task
+app.post('/run', async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt || typeof prompt !== 'string') {
+    return res.status(400).json({ error: 'prompt is required' });
+  }
+
+  const id = randomUUID();
+  const task = {
+    id,
+    timestamp: new Date().toISOString(),
+    prompt,
+    status: 'running',
+    output: '',
+  };
+  await addTask(task);
+
+  const proc = spawn('claude', ['--dangerously-skip-permissions', '-p', prompt], {
+    cwd: COWORK_DIR,
+  });
+
+  const emitter = new EventEmitter();
+  const entry = { proc, outputBuffer: '', emitter };
+  registry.set(id, entry);
+
+  const onChunk = (chunk) => {
+    const str = chunk.toString();
+    entry.outputBuffer += str;
+    emitter.emit('data', str);
+  };
+
+  proc.stdout.on('data', onChunk);
+  proc.stderr.on('data', onChunk);
+
+  proc.on('error', async (err) => {
+    const msg = `[spawn error: ${err.message}]`;
+    entry.outputBuffer += msg;
+    emitter.emit('data', msg);
+    registry.delete(id);
+    await updateTask(id, { status: 'failed', output: entry.outputBuffer });
+    emitter.emit('done', 'failed');
+  });
+
+  proc.on('close', async (code) => {
+    const status = code === 0 ? 'done' : 'failed';
+    registry.delete(id);
+    await updateTask(id, { status, output: entry.outputBuffer });
+    emitter.emit('done', status);
+  });
+
+  res.json({ id });
+});
+
+// GET /stream/:id added in Task 5
 
 // --- START ---
 recoverStaleTasks().then(() => {
